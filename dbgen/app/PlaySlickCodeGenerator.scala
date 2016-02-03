@@ -1,11 +1,16 @@
 import java.io.File
-import play.api._
+
+import com.typesafe.config.ConfigFactory
+import play.api.db.DBApi
 import play.api.db.evolutions.Evolutions
-import play.api.Application
-import scala.slick.codegen.SourceCodeGenerator
-import scala.slick.jdbc.meta.createModel
-import scala.slick.driver.H2Driver.simple._
-import scala.slick.driver.H2Driver
+import play.api.{Application, _}
+import slick.codegen.SourceCodeGenerator
+import slick.driver.H2Driver
+
+import scala.concurrent.Await
+import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.duration._
+
 
 /**
  *  This code generator runs Play Framework Evolutions against an in-memory database
@@ -15,7 +20,11 @@ import scala.slick.driver.H2Driver
  *
  *  Other parameters are taken from this modules conf/application.conf
  */
-object PlaySlickCodeGenerator{
+object PlaySlickCodeGenerator {
+
+  private var playInstance = Option.empty[Application]
+
+  private val ExcludedTables = Seq("play_evolutions")
 
   def main(args: Array[String]) = {
     try
@@ -23,47 +32,51 @@ object PlaySlickCodeGenerator{
       run(outputDir = args(0))
     }
     catch {
-      case ex: Throwable => println("Could not generate code: " + ex.getMessage)
+      case ex: Throwable =>
+        println("Could not generate code: " + ex.getMessage)
+        ex.printStackTrace()
     }
     finally {
-      Play.stop()
+      playInstance.foreach(Play.stop)
     }
   }
 
   private def run(outputDir: String) = {
 
-    // start fake application using in-memory database
-    implicit val app = FakeApplication(
+    // Use FakeApplication to spin up Play Instance
+    implicit val app: Application = play.api.test.FakeApplication(
       path = new File("dbgen").getCanonicalFile,
-      classloader = Thread.currentThread().getContextClassLoader)
+      classloader = Thread.currentThread().getContextClassLoader
+    )
+    playInstance = Some(app)
 
     Play.start(app)
 
+    val config = app.configuration.underlying.withFallback(ConfigFactory.defaultReference())
+    val configuration = Configuration(config)
     // read database configuration
-    val databaseNames = app.configuration.getConfig("db").toSeq.flatMap(_.subKeys)
-    val databaseName = databaseNames.headOption.getOrElse("")
-    val outputPackage = app.configuration.getString(s"db.$databaseName.outputPackage").getOrElse("")
-    val outputProfile = app.configuration.getString(s"db.$databaseName.outputProfile").getOrElse("")
+    val databaseNames = configuration.getConfig("slick.dbs").toSeq.flatMap(_.subKeys)
+    val databaseName = databaseNames.headOption
+      .getOrElse(throw new IllegalArgumentException("No database name found in configuration"))
+    val outputPackage = configuration.getString(s"db.$databaseName.outputPackage")
+      .getOrElse(throw new IllegalArgumentException("No outputPackage found in configuration"))
+    val outputProfile = configuration.getString(s"db.$databaseName.outputProfile")
+      .getOrElse(throw new IllegalArgumentException("No outputProfile found in configuration"))
 
-    if (databaseName.length == 0)
-      throw new IllegalArgumentException("No database name found in configuration")
-    else if (outputPackage.length == 0)
-      throw new IllegalArgumentException("No outputPackage found in configuration")
-    else if (outputProfile.length == 0)
-      throw new IllegalArgumentException("No outputProfile found in configuration")
+    val dBApi = app.injector.instanceOf[DBApi]
+    val db = dBApi.database(databaseName)
 
-    // apply evolutions from main project
-    Evolutions.applyFor(databaseName)
+    val slickDb = slick.jdbc.JdbcBackend.Database.forDataSource(db.dataSource)
+
+
+    Evolutions.applyEvolutions(db)
 
     // get list of tables for which code will be generated
     // also, we exclude the play evolutions table
-    val db = Database.forDataSource(play.api.db.DB.getDataSource(databaseName))
-    val excludedTables = Seq("play_evolutions")
-    val model = db.withSession {
-      implicit session =>
-        val tables = H2Driver.defaultTables.filterNot(t => excludedTables contains t.name.name)
-        H2Driver.createModel(Some(tables))
-    }
+    val listOfTablesQuery = H2Driver.defaultTables.map(_.filterNot(t => ExcludedTables.contains(t.name.name)))
+    val createDatabaseDbAction = H2Driver.createModel(Some(listOfTablesQuery))
+    val model = Await.result(slickDb.run(createDatabaseDbAction), 20.seconds)
+
 
     // generate slick db code
     val codegen = new SourceCodeGenerator(model) {
@@ -84,21 +97,7 @@ object PlaySlickCodeGenerator{
       container = "Tables",
       fileName = "Tables.scala")
 
-    Play.stop()
+    playInstance.foreach(Play.stop)
   }
-
-}
-
-/** Fake application needed for running evolutions outside normal Play app */
-case class FakeApplication(
-    override val path: java.io.File = new java.io.File("."),
-    override val classloader : ClassLoader = classOf[FakeApplication].getClassLoader,
-    val additionalConfiguration: Map[String, _ <: Any] = Map.empty) extends {
-  override val sources = None
-  override val mode = play.api.Mode.Test
-} with Application with WithDefaultConfiguration with WithDefaultGlobal with WithDefaultPlugins {
-
-  override def configuration =
-    super.configuration ++ play.api.Configuration.from(additionalConfiguration)
 
 }

@@ -1,23 +1,25 @@
 import sbt._
 import Keys._
-import play.Play.autoImport._
+import play.sbt.Play.autoImport._
 
 object ApplicationBuild extends Build {
 
   val appName         = "play-slick-evolutions"
   val appVersion      = "1.0-SNAPSHOT"
-  val commonScalaVersion = "2.11.2" // 2.11.2
+  val commonScalaVersion = "2.11.7"
+  val slickVersion = "3.1.1"
 
   val appDependencies = Seq(
     jdbc,
     cache, // play cache external module
-    "com.typesafe.slick" %% "slick" % "2.1.0",
-    "com.typesafe.slick" %% "slick-codegen" % "2.1.0",
+    evolutions,
+    "com.typesafe.slick" %% "slick" % slickVersion,
+    "com.typesafe.slick" %% "slick-codegen" % slickVersion,
     "mysql" % "mysql-connector-java" % "5.1.27"
   )
 
   // main Play project
-  val main = Project(appName, file(".")).enablePlugins(play.PlayScala).settings(
+  val main = Project(appName, file(".")).enablePlugins(play.sbt.PlayScala).settings(
     scalaVersion := commonScalaVersion,
     version := appVersion,
     libraryDependencies ++= appDependencies,
@@ -26,10 +28,14 @@ object ApplicationBuild extends Build {
   ).dependsOn(dbGen)
 
   // Slick code generator module
-  lazy val dbGen = Project("dbgen", file("dbgen")).enablePlugins(play.PlayScala).settings(
+  lazy val dbGen = Project("dbgen", file("dbgen")).enablePlugins(play.sbt.PlayScala).settings(
     scalaVersion := commonScalaVersion,
     version := appVersion,
-    libraryDependencies ++= appDependencies
+    libraryDependencies ++= appDependencies ++ Seq(
+      // Explicitly put play test on compile classpath so we can use FakeApplication
+      "com.typesafe.play" %% "play-test" % "2.4.6",
+      "com.h2database" % "h2" % "1.4.190"
+    )
   )
 
   // Code generation task
