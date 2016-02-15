@@ -65,15 +65,13 @@ object PlaySlickCodeGenerator {
 
     val dBApi = app.injector.instanceOf[DBApi]
     val db = dBApi.database(databaseName)
-
     val slickDb = slick.jdbc.JdbcBackend.Database.forDataSource(db.dataSource)
 
-
-    Evolutions.applyEvolutions(db)
+    Evolutions.applyFor(databaseName)
 
     // get list of tables for which code will be generated
     // also, we exclude the play evolutions table
-    val listOfTablesQuery = H2Driver.defaultTables.map(_.filterNot(t => ExcludedTables.contains(t.name.name)))
+    val listOfTablesQuery = H2Driver.defaultTables.map(_.filterNot(t => ExcludedTables.contains(t.name.name.toLowerCase)))
     val createDatabaseDbAction = H2Driver.createModel(Some(listOfTablesQuery))
     val model = Await.result(slickDb.run(createDatabaseDbAction), 20.seconds)
 
